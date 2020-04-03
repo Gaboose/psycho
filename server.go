@@ -1,18 +1,27 @@
-package psoni
+package psycho
 
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 )
 
-type ErrParser struct{}
+type Server interface {
+	Pub(subject string, payload []byte)
+	Sub(subject string)
+	Unsub(subject string)
+	ServeServerOpsTo(client Client)
+}
 
-func (e ErrParser) Error() string { return "Parser Error" }
+type ErrParser struct {
+	reason string
+}
+
+func (e ErrParser) Error() string {
+	return fmt.Sprintf("parser error: %s", e.reason)
+}
 
 type ClientOpType int
 
@@ -26,6 +35,7 @@ type ClientOperation struct {
 	Type    ClientOpType
 	Subject string
 	Payload []byte
+	Error   error
 }
 
 type ServerDecoder struct {
@@ -38,43 +48,60 @@ func NewServerDecoder(r io.Reader) *ServerDecoder {
 	}
 }
 
-func (p *ServerDecoder) ReadOperation() (ClientOperation, error) {
+func (p *ServerDecoder) ReadOperation() (ClientOperation, bool) {
 	line, err := p.reader.ReadString('\n')
-	if err != nil {
-		return ClientOperation{}, err
+	if err == io.EOF {
+		return ClientOperation{Error: io.EOF}, false
+	} else if err != nil {
+		return ClientOperation{Error: ErrParser{"reading new line"}}, false
 	}
 	tokens := strings.Split(line[:len(line)-1], " ")
 
 	if len(tokens) < 2 {
-		return ClientOperation{}, errors.New("len(tokens) < 2")
+		return ClientOperation{Error: ErrParser{
+			fmt.Sprintf("expected 2 or more tokens, found %d", len(tokens)),
+		}}, false
 	}
 
 	switch tokens[0] {
 	case "SUB":
+		if len(tokens) != 2 {
+			return ClientOperation{Error: ErrParser{
+				fmt.Sprintf("SUB op expects exactly 1 argument, found %d", len(tokens)-1),
+			}}, false
+		}
 		return ClientOperation{
 			Type:    TypeSubscribe,
 			Subject: tokens[1],
-		}, nil
+		}, true
 	case "UNSUB":
+		if len(tokens) != 2 {
+			return ClientOperation{Error: ErrParser{
+				fmt.Sprintf("UNSUB op expects exactly 1 argument, found %d", len(tokens)-1),
+			}}, false
+		}
 		return ClientOperation{
 			Type:    TypeUnsubscribe,
 			Subject: tokens[1],
-		}, nil
+		}, true
 	case "PUB":
 		if len(tokens) != 3 {
-			return ClientOperation{}, errors.New("PUB; len(tokens) != 3")
+			return ClientOperation{Error: ErrParser{
+				fmt.Sprintf("PUB op expects exactly 2 arguments, found %d", len(tokens)-1),
+			}}, false
 		}
 		payload, err := readPayload(p.reader, tokens[2])
 		if err != nil {
-			return ClientOperation{}, ErrParser{}
+			return ClientOperation{Error: ErrParser{fmt.Sprintf("reading payload: %v", err)}}, false
 		}
 		return ClientOperation{
 			Type:    TypePublish,
 			Subject: tokens[1],
 			Payload: payload,
-		}, nil
+		}, true
+	default:
+		return ClientOperation{Error: ErrParser{"unknown op name"}}, false
 	}
-	return ClientOperation{}, ErrParser{}
 }
 
 type ServerEncoder struct {
@@ -96,7 +123,7 @@ func (e *ServerEncoder) Info(values map[string]interface{}) error {
 	return err
 }
 
-func (e *ServerEncoder) Message(subject string, payload []byte) error {
+func (e *ServerEncoder) Msg(subject string, payload []byte) error {
 	_, err := fmt.Fprintf(e.writer, "MSG %s %d\n%s\n", subject, len(payload), string(payload))
 	return err
 }
@@ -107,7 +134,7 @@ func (e *ServerEncoder) OK() error {
 }
 
 func (e *ServerEncoder) Err(message string) error {
-	_, err := fmt.Fprintf(e.writer, "-ERR '%s'\n", message)
+	_, err := fmt.Fprintf(e.writer, "-ERR %q\n", message)
 	return err
 }
 
@@ -119,25 +146,25 @@ func (e *ServerEncoder) OKErr(err error) {
 	e.Err(err.Error())
 }
 
-func readPayload(reader *bufio.Reader, nbytes string) ([]byte, error) {
-	n, err := strconv.ParseUint(nbytes, 10, 64)
-	if err != nil {
-		return nil, ErrParser{}
-	}
-	var payload = make([]byte, n)
-	nread, err := reader.Read(payload)
-	if nread < int(n) {
-		return nil, ErrParser{}
-	}
-	if err != nil {
-		return nil, ErrParser{}
-	}
-	delim, err := reader.ReadString('\n')
-	if delim != "\n" {
-		return nil, ErrParser{}
-	}
-	if err != nil {
-		return nil, ErrParser{}
-	}
-	return payload, nil
-}
+// func readPayload(reader *bufio.Reader, nbytes string) ([]byte, error) {
+// 	n, err := strconv.ParseUint(nbytes, 10, 64)
+// 	if err != nil {
+// 		return nil, errors.New("parsing number of bytes")
+// 	}
+// 	var payload = make([]byte, n)
+// 	nread, err := reader.Read(payload)
+// 	if nread < int(n) {
+// 		return nil, fmt.Errorf("expected to read %d bytes, but only read %d", n, nread)
+// 	}
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	delim, err := reader.ReadString('\n')
+// 	if delim != "\n" {
+// 		return nil, fmt.Errorf("payload did not end with a new line")
+// 	}
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	return payload, nil
+// }

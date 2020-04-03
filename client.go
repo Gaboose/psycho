@@ -1,4 +1,4 @@
-package psoni
+package psycho
 
 import (
 	"bufio"
@@ -11,13 +11,18 @@ import (
 	"sync/atomic"
 )
 
+type Client interface {
+	HandleInfo(info map[string]interface{})
+	HandleMsg(subject string, payload []byte)
+}
+
 type ErrConnClosed struct{}
 
-func (e ErrConnClosed) Error() string { return "psoni: using a closed connection" }
+func (e ErrConnClosed) Error() string { return "psycho: using a closed connection" }
 
-type Client struct {
-	dec  *ClientDecoder
-	enc  *ClientEncoder
+type client struct {
+	dec  *clientDecoder
+	enc  *clientEncoder
 	send chan *ClientOperation
 
 	info  map[string]string
@@ -29,8 +34,8 @@ type Client struct {
 	sync.RWMutex
 }
 
-func NewClient(reader io.Reader, writer io.Writer) *Client {
-	c := &Client{
+func Newclient(reader io.Reader, writer io.Writer) *client {
+	c := &client{
 		dec:  NewClientDecoder(reader),
 		enc:  NewClientEncoder(writer),
 		send: make(chan *ClientOperation),
@@ -45,7 +50,7 @@ func NewClient(reader io.Reader, writer io.Writer) *Client {
 	return c
 }
 
-func (c *Client) Dial(subject string) (*Conn, error) {
+func (c *client) Dial(subject string) (*Conn, error) {
 	select {
 	case c.send <- &ClientOperation{
 		Type:    TypeSubscribe,
@@ -68,7 +73,7 @@ func (c *Client) Dial(subject string) (*Conn, error) {
 	return conn, nil
 }
 
-func (c *Client) Info() (map[string]string, error) {
+func (c *client) Info() (map[string]string, error) {
 	select {
 	case <-c.infoReceived:
 	case <-c.closing:
@@ -77,7 +82,7 @@ func (c *Client) Info() (map[string]string, error) {
 	return c.info, nil
 }
 
-func (c *Client) unsubscribe(conn *Conn) {
+func (c *client) unsubscribe(conn *Conn) {
 	c.Lock()
 	delete(c.conns[conn.subject], conn)
 	c.Unlock()
@@ -85,7 +90,7 @@ func (c *Client) unsubscribe(conn *Conn) {
 	close(conn.closing)
 }
 
-func (c *Client) reader() {
+func (c *client) reader() {
 	var infoOnce sync.Once
 	var conns []*Conn
 	for {
@@ -118,7 +123,7 @@ func (c *Client) reader() {
 	}
 }
 
-func (c *Client) writer() {
+func (c *client) writer() {
 	for op := range c.send {
 		switch op.Type {
 		case TypePublish:
@@ -131,7 +136,7 @@ func (c *Client) writer() {
 	}
 }
 
-func (c *Client) fatal(err error) {
+func (c *client) fatal(err error) {
 	c.fatalErr = err
 	close(c.closing)
 }
@@ -141,7 +146,7 @@ type Conn struct {
 	recv    chan []byte
 	send    chan *ClientOperation
 
-	client *Client
+	client *client
 
 	recvMsgs, recvBytes uint64
 	closing             chan struct{}
@@ -197,17 +202,17 @@ type ServerOperation struct {
 	Map     map[string]string
 }
 
-type ClientDecoder struct {
+type clientDecoder struct {
 	reader *bufio.Reader
 }
 
-func NewClientDecoder(r io.Reader) *ClientDecoder {
-	return &ClientDecoder{
+func NewClientDecoder(r io.Reader) *clientDecoder {
+	return &clientDecoder{
 		reader: bufio.NewReader(r),
 	}
 }
 
-func (d *ClientDecoder) ReadOperation() (ServerOperation, error) {
+func (d *clientDecoder) ReadOperation() (ServerOperation, error) {
 	line, err := d.reader.ReadString('\n')
 	if err != nil {
 		return ServerOperation{}, err
@@ -265,27 +270,27 @@ func (d *ClientDecoder) ReadOperation() (ServerOperation, error) {
 	return ServerOperation{}, ErrParser{}
 }
 
-type ClientEncoder struct {
+type clientEncoder struct {
 	writer io.Writer
 }
 
-func NewClientEncoder(writer io.Writer) *ClientEncoder {
-	return &ClientEncoder{
+func NewClientEncoder(writer io.Writer) *clientEncoder {
+	return &clientEncoder{
 		writer: writer,
 	}
 }
 
-func (e *ClientEncoder) Publish(subject string, payload []byte) error {
+func (e *clientEncoder) Publish(subject string, payload []byte) error {
 	_, err := fmt.Fprintf(e.writer, "PUB %s %d\n%s\n", subject, len(payload), string(payload))
 	return err
 }
 
-func (e *ClientEncoder) Subscribe(subject string) error {
+func (e *clientEncoder) Subscribe(subject string) error {
 	_, err := fmt.Fprintf(e.writer, "SUB %s\n", subject)
 	return err
 }
 
-func (e *ClientEncoder) Unsubscribe(subject string) error {
+func (e *clientEncoder) Unsubscribe(subject string) error {
 	_, err := fmt.Fprintf(e.writer, "UNSUB %s\n", subject)
 	return err
 }
