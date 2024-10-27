@@ -43,11 +43,3 @@ My current belief is that P2P would be easier. Peers could discover each other b
 Congestion, flow control and backpressure would be different, interesting and harder at first.
 
 It's an adventure!.. Or a way to go through what devs using NATS already have.
-
-## Security ##
-
-Hahahahahahahahahahahahahaha....
-
-## License ##
-
-... I'm not sure ...
